@@ -6,27 +6,38 @@ class Callbacks:
 
 
         # Clipping key flags
-        self.clipping_key = CLIP_KEY
         self.setbutton_pressed = False
+        self.clipping_key = str(self.main.read_from_file('clip_key'))
+        print([self.clipping_key])
+        if self.clipping_key == '':
+            self.clipping_key = 'f8'
+            self.main.write_to_file(value='f8', pointer='clip_key')
 
         # Monitor selector flags
-        self.monitor = int(main.read_from_file('monitor'))
+        try:
+            self.monitor = int(self.main.read_from_file('monitor'))
+        except ValueError:
+            self.selectmonitor([0])
 
         # FPS
-        self.fps = int(main.read_from_file('fps'))
+        try:
+            self.fps = int(self.main.read_from_file('fps'))
+        except ValueError:
+            self.select_fps(60)
 
         # Clip Length
-        self.clip_length = int(main.read_from_file('clip_length'))
+        try:
+            self.clip_length = int(self.main.read_from_file('clip_length'))
+        except ValueError:
+            self.select_clip_length(60)
 
         # GPU
-        self.gpu = str(main.read_from_file('gpu'))
-
-        # Output
-        self.file_name = self.create_file_name()
+        self.gpu = str(self.main.read_from_file('gpu'))
 
 
-    # Lets the user set the button. Changes text and
+    # Lets the user set the button. Changes text too
     def setbutton(self):
+
         if not self.setbutton_pressed:
             self.setbutton_pressed = True
             self.clipping_key = None # Resets the clipping key
@@ -50,22 +61,31 @@ class Callbacks:
             self.setbutton_pressed = False
             self.main.clip_key_pressed = True
 
-
+    # For monitor selection
     def selectmonitor(self, choice):
         self.monitor = int(choice[-1])
 
         self.main.write_to_file('monitor',str(self.monitor))
 
+    # For FPS selection
+    def select_fps(self, choice):
+        self.fps = int(choice)
+        self.main.write_to_file('fps',self.fps)
+        self.reset_capture_list()
+
+    # For clip length selection
     def select_clip_length(self, choice):
         self.clip_length = int(choice)
         self.main.write_to_file('clip_length', str(self.clip_length))
 
-        self.main.video_list = []
+        self.reset_capture_list()
 
+    # For GPU selection
     def select_gpu(self, choice):
         self.gpu = choice
         self.main.write_to_file('gpu', str(self.gpu))
 
+    # Creates an appropriate path and file name for the clip
     def create_file_name(self):
         videos_path = Path.home() / "Videos" / 'Clips_OWO'
         videos_path.mkdir(parents=True, exist_ok=True)
@@ -73,6 +93,7 @@ class Callbacks:
 
         return str(file_path)
 
+    # Resets the capture logic
     def reset_capture_list(self):
         self.main.video_list = []
         self.main.capture_start = 0

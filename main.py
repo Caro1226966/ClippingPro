@@ -12,6 +12,9 @@ class MainProgram(customtkinter.CTk):
         super().__init__()
         self.geometry(str(int(SCREEN_WIDTH/1.5))+'x'+ str(int(SCREEN_HEIGHT/1.5)))
 
+        # Button Callbacks
+        self.button_callback = Callbacks(self)
+
         # App logic flags
         self.clip_key_pressed = False
         self.popup_active = False
@@ -28,9 +31,6 @@ class MainProgram(customtkinter.CTk):
         self.last_frame_time = time.time()
         self.capture_start = 0
         self.capture_end = 0
-
-        # Button Callbacks
-        self.button_callback = Callbacks(self)
 
         # Main Sidebar Frame (Vertical Stack)
         self.sidebar = customtkinter.CTkFrame(self, width=400, corner_radius=0)
@@ -99,11 +99,30 @@ class MainProgram(customtkinter.CTk):
         self.clip_length_selector.set(self.read_from_file("clip_length"))
         self.clip_length_selector.pack(side="left", padx=5)
 
-        # --- Row 4: Gpu Choice Selection ---
+        # --- Row 4: FPS Selection ---
         self.row4 = customtkinter.CTkFrame(self.sidebar, fg_color="transparent")
         self.row4.pack(side="top", anchor="w", padx=10, pady=10)
 
-        self.gpu_text = customtkinter.CTkTextbox(self.row4, width=200, height=30)
+        self.fps_text = customtkinter.CTkTextbox(self.row4, width=200, height=30)
+        self.fps_text.pack(side="left", padx=5)
+        self.fps_text.insert(index=0.0, text="FPS: ")
+        self.fps_text.configure(state="disabled")
+
+        self.fps_selector = customtkinter.CTkComboBox(
+            self.row4,
+            values=self.fps_list,
+            command=self.button_callback.select_fps,
+            state="readonly",
+        )
+        self.fps_selector.set(self.read_from_file("fps"))
+        self.fps_selector.pack(side="left", padx=5)
+
+
+        # --- Row 5: Gpu Choice Selection ---
+        self.row5 = customtkinter.CTkFrame(self.sidebar, fg_color="transparent")
+        self.row5.pack(side="top", anchor="w", padx=10, pady=10)
+
+        self.gpu_text = customtkinter.CTkTextbox(self.row5, width=200, height=30)
         self.gpu_text.pack(side="left", padx=5)
         self.gpu_text.insert(index=0.0, text="GPU: ")
         self.gpu_text.configure(state="disabled")
@@ -113,7 +132,7 @@ class MainProgram(customtkinter.CTk):
             self.button_callback.select_gpu(GPU_LIST[0])
 
         self.gpu_selector = customtkinter.CTkComboBox(
-            self.row4,
+            self.row5,
             values=GPU_LIST,
             command=self.button_callback.select_gpu,
             state="readonly",
@@ -175,8 +194,9 @@ class MainProgram(customtkinter.CTk):
         if elapsed_time >= frame_delay:
             # Gets a screenshot and adds it to the list
             try:
-                sct_image= self.sct.grab(self.monitor)
+                sct_image = self.sct.grab(self.monitor)
                 self.video_list.append(sct_image.bgra)
+
             except:
                 print('There was an error getting the screenshot! This is not good :(')
 

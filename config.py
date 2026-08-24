@@ -13,6 +13,7 @@ import time
 import subprocess
 from pathlib import Path
 import winreg
+import cv2
 
 root = tk.Tk()
 SCREEN_WIDTH = root.winfo_screenwidth()
