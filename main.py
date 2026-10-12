@@ -1,5 +1,4 @@
-import threading
-import time
+import subprocess
 
 import customtkinter
 
@@ -10,7 +9,9 @@ from button_callbacks import *
 class MainProgram(customtkinter.CTk):
     def __init__(self):
         super().__init__()
-        self.geometry(str(int(SCREEN_WIDTH/1.5))+'x'+ str(int(SCREEN_HEIGHT/1.5)))
+        # Window setup
+        self.geometry('380x500')
+        self.resizable(False, False)
 
         # Button Callbacks
         self.button_callback = Callbacks(self)
@@ -21,16 +22,19 @@ class MainProgram(customtkinter.CTk):
 
         # GUI lists
         self.monitor_list = []
-        self.clip_length_list = ['10','20','30','60','120']
-        self.fps_list = ['24','30','60','120']
+        self.clip_length_list = ['10','20','30','60']
+        self.fps_list = ['24','30','60']
 
-        # SCT
+        # Capture
         self.sct = mss.MSS()
         self.video_list = []
         self.monitor = None
         self.last_frame_time = time.time()
         self.capture_start = 0
         self.capture_end = 0
+        self.clip_num = 0
+        self.ffmpeg_process = None
+        self.clipping = False
 
         # Main Sidebar Frame (Vertical Stack)
         self.sidebar = customtkinter.CTkFrame(self, width=400, corner_radius=0)
@@ -56,7 +60,15 @@ class MainProgram(customtkinter.CTk):
         )
         self.current_button_text.configure(state="disabled")
 
+        # --- ROW 1.5 (trust) ---
+        self.row1point5 = customtkinter.CTkFrame(self.sidebar, fg_color="transparent")
+        self.row1point5.pack(side="top", padx=10, pady=10)
+
+        self.visuals_text = customtkinter.CTkLabel(self.row1point5, text='--- Visuals ---', font=('Arial', 20))
+        self.visuals_text.pack(side="left", pady=5, padx=5, anchor='center')
+
         # --- MONITOR DATA LOGIC ---
+        self.monitor_list.append('-1')
         for monitor in range(len(self.sct.monitors) - 1):
             monitor_num = str(monitor)
             self.monitor_list.append(monitor_num)
@@ -140,10 +152,34 @@ class MainProgram(customtkinter.CTk):
         self.gpu_selector.set(self.read_from_file("gpu"))
         self.gpu_selector.pack(side="left", padx=5)
 
+        # --- Row 6: Mouse Active Choice ---
+        self.row6 = customtkinter.CTkFrame(self.sidebar, fg_color="transparent")
+        self.row6.pack(side="top", anchor="w", padx=10, pady=10)
+
+        self.show_mouse_text = customtkinter.CTkTextbox(self.row6, width=200, height=30)
+        self.show_mouse_text.pack(side="left", padx=5)
+        self.show_mouse_text.insert(index=0.0, text="Mouse: ")
+        self.show_mouse_text.configure(state="disabled")
+
+        self.show_mouse_selector = customtkinter.CTkCheckBox(self.row6,command=self.button_callback.draw_mouse)
+        self.show_mouse_selector.pack(side='left', padx = 5)
+
+        # Toggles it to on if the mouse is on
+        if self.button_callback.mouse_shown:
+            self.show_mouse_selector.toggle()
+
+        # --- ROW 6.5 (trust) ---
+        self.row6point5 = customtkinter.CTkFrame(self.sidebar, fg_color="transparent")
+        self.row6point5.pack(side="top", padx=10, pady=10)
+
+        self.visuals_text = customtkinter.CTkLabel(self.row6point5, text='--- Audio ---', font=('Arial', 20))
+        self.visuals_text.pack(side="left", pady=5, padx=5, anchor='center')
+
 
         print('Initialised GUI :)')
 
-        self.get_ffmpeg_arguments()
+        # Initialisation of ffmpeg
+        self.start_ffmpeg()
 
         # Close to system tray
         self.system_tray_setup()
@@ -157,154 +193,189 @@ class MainProgram(customtkinter.CTk):
     # This is the program's main logic loop
     def loop(self):
         # print('Called mainloop')
-        if keyboard.is_pressed(self.button_callback.clipping_key) and self.clip_key_pressed == False:
-            print('Clipping...')
-            Popup('Clipping...')
+        if keyboard.is_pressed(self.button_callback.clipping_key) and self.clip_key_pressed == False and not self.clipping:
 
             # Compiling the list into a video clip
-            frames_to_compile = list(self.video_list)
-            self.last_frame_time = time.time()
-            compilation_thread = threading.Thread(target=self.compile_clip,
-                                                  args=(frames_to_compile,),
-                                                  daemon = True)
-            compilation_thread.start()
-
+            threading.Thread(target=self.compile_clip).start()
             self.clip_key_pressed = True
 
         elif not keyboard.is_pressed(self.button_callback.clipping_key):
             self.clip_key_pressed = False
 
-        self.capture_screen()
         self.after(1,self.loop) # Lets the program logic mainloop keep running alongside GUI
 
-    # Writes whatever the input is to wherever it needs to go
-    def capture_screen(self):
-        current_time = time.time()
+    # Starts the background capture loop
+    def start_ffmpeg(self):
+        # Shuts down any old processes
+        self.stop_ffmpeg()
 
-        if self.capture_start == 0:
-            self.capture_start = current_time
+        self.button_callback.reset_capture_list()
 
-        # Defines the monitor
-        self.monitor = self.sct.monitors[self.button_callback.monitor + 1]
+        # Gets the correct encoders
+        encoder = self.get_ffmpeg_arguments()
+        monitors = get_monitors()
+        monitor_idx = int(self.button_callback.monitor)
 
-        # Calculates frame delay to hit target fps
-        elapsed_time = current_time - self.last_frame_time
-        frame_delay = 1.0 / self.button_callback.fps
+        # 2. Extract coordinates and dimensions safely
+        if monitor_idx < len(monitors):
+            m = monitors[monitor_idx]
+            offset_x, offset_y = m.x, m.y
+            width, height = m.width, m.height
+        else:
+            # Fallback to primary monitor bounds if index is out of range
+            offset_x, offset_y, width, height = 0, 0, 1920, 1080
 
-        if elapsed_time >= frame_delay:
-            # Gets a screenshot and adds it to the list
-            try:
-                sct_image = self.sct.grab(self.monitor)
-                self.video_list.append(sct_image.bgra)
+        # Gets the correct clip length
+        segments = str(int(self.button_callback.clip_length/2))
 
-            except:
-                print('There was an error getting the screenshot! This is not good :(')
+        # print('MONITOR: ' + str(self.button_callback.monitor))
 
-            # Culls unneeded screenshots
-            if len(self.video_list) > self.button_callback.fps * self.button_callback.clip_length:
-                self.video_list.pop(0)
+        if self.button_callback.monitor == -1:
+            monitor_settings = ["-i", 'desktop']
+        else:
+            monitor_settings = ["-offset_x", str(offset_x),
+            "-offset_y", str(offset_y),
+            "-video_size", f"{width}x{height}",
+            "-i", 'desktop']
 
-            self.last_frame_time += frame_delay
-
-# Puts all the screenshots together into a video
-    def compile_clip(self,video_list):
-        self.capture_end = time.time()
-
-        actual_clip_length = self.capture_end - self.capture_start
-
-        if actual_clip_length >= self.button_callback.clip_length:
-            actual_clip_length = self.button_callback.clip_length
-
-        actual_fps = len(video_list)/actual_clip_length
-        actual_fps = int(round(actual_fps, 0))
-
-        width = self.monitor['width']
-        height = self.monitor['height']
+        # FFMPEG Flags
         ffmpeg_cmd = [
-            'bin/ffmpeg.exe',
-            '-y',  # Overwrite output file if it already exists
-            '-f', 'rawvideo',  # Input format is raw pixels
-            '-vcodec', 'rawvideo',
-            '-pix_fmt', 'bgr0',  # MSS bgra data maps perfectly to FFmpeg's bgr0
-            '-s', f"{width}x{height}",  # Tell FFmpeg the dimensions of the incoming frames
-            '-r', str(actual_fps), # Input frame rate
-            *self.get_ffmpeg_arguments(),
-            self.button_callback.create_file_name()
+            "bin/ffmpeg.exe",
+            "-y",
+            "-thread_queue_size", "1024",
+            "-fflags", "nobuffer+discardcorrupt",
+            "-f", "gdigrab",
+            "-draw_mouse", str(self.button_callback.mouse_shown),
+            "-framerate", str(self.button_callback.fps),
+            *monitor_settings,
+            *encoder,
+            "-g", str(self.button_callback.fps * 2),  # Forces a keyframe every 2 seconds
+            "-keyint_min", str(self.button_callback.fps * 2),
+            "-sc_threshold", "0",  # Disables automatic scene-change keyframes for clean cuts
+            "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+            "-f", "segment",
+            "-segment_time", "2",  # Length of each ring file in seconds
+            "-segment_wrap", segments,  # Total number of rotating files before it loops,
+            os.path.join(self.button_callback.get_temp_directory().as_posix(), "ring_%d.mp4")
         ]
 
-        process = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
+        try:
+            self.ffmpeg_process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            print('Starting capture failed Error: ', e)
 
-        for image in video_list:
-            process.stdin.write(image)
 
-        process.stdin.close()
-        process.wait()
-        print('Clipped!')
-        Popup('Clipped :)')
+    # Stops the FFMPEG background capture
+    def stop_ffmpeg(self):
+        # Checks if an instance is running
+        if hasattr(self, 'ffmpeg_process') and self.ffmpeg_process:
 
+            # Starts the stopping
+            self.ffmpeg_process.terminate()
+
+            # Gives it 2 seconds to stop and kills it if it doesn't
+            try:
+                self.ffmpeg_process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.ffmpeg_process.kill()
+
+
+    def compile_clip(self):
+        # Gets the temp dir
+        temp_dir = Path(self.button_callback.get_temp_directory().as_posix())
+
+        # Gets all files in that location
+        file_list = list(temp_dir.glob('ring_*.mp4'))
+
+        # Makes sure there are actually files in the location
+        if not file_list:
+            print('No clips to compile')
+            return
+
+        # sorts the files by time and writes the names  in order into a txt document
+        file_list = sorted(file_list, key=lambda f: f.stat().st_mtime)
+        manifest_path = temp_dir / 'temp_file_names.txt'
+        valid_files = file_list[:-1]
+        with open(manifest_path, 'w', encoding='utf-8') as txt_file:
+            for file in valid_files:
+                posix_path = file.as_posix()
+                txt_file.write('file ' + posix_path + '\n')
+
+        output_filename = self.button_callback.create_file_name()
+
+        ffmpeg_cmd = [
+            "bin/ffmpeg.exe", "-y",
+            "-fflags", "+genpts",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(manifest_path),
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "23",
+            "-c:a", "copy",
+            str(output_filename)
+        ]
+
+        try:
+            Popup('Clipping...')
+            print('Clipping...')
+            self.clipping = True
+
+            # subprocess.run blocks this worker thread until stitching is done
+            subprocess.run(ffmpeg_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+
+            Popup('Clipped!')
+            print('Clipped successfully to:', output_filename)
+
+            self.clipping = False
+
+        except subprocess.CalledProcessError as e:
+            print('Compiling of full clip failed! Error code:', e)
+            Popup('Clipping Failed!')
+            self.clipping = False
+
+    # Gets the correct FFMPEG arguments per GPU
     def get_ffmpeg_arguments(self):
-        gpu = self.button_callback.gpu.split()
+            gpu = self.button_callback.gpu.split()
 
-        # AMD GPU
-        if gpu[0] == 'AMD':
-            return ('-i',
-                    '-',
-                    '-c:v',
-                    'h264_amf',  # AMD Hardware Encoder
-                    '-usage',
-                    'lowlatency',  # Optimized for real-time capture
-                    '-quality',
-                    'speed',  # Prioritizes encoding speed
-                    '-rc',
-                    'cqp',  # Constant Quantization Parameter
-                    '-qp_i',
-                    '23',  # I-frame quality
-                    '-qp_p',
-                    '23',  # P-frame quality
-                    '-pix_fmt',
-                    'yuv420p')
+            # AMD GPU
+            if gpu[0] == 'AMD':
+                return [
+                    '-c:v', 'h264_amf',
+                    '-rc', 'cbr',  # Switch away from vbr_latency
+                    '-b:v', '5M',  # Stable constant bitrate
+                    '-qp_i', '23',
+                    '-qp_p', '23',
+                    "-pix_fmt", "nv12",
+                ]
 
-        # Nvidia GPU
-        elif gpu[0] == 'NVIDIA':
-            return ('-i',
-                    '-',
-                    '-c:v',
-                    'h264_nvenc',  # NVIDIA Hardware Encoder
-                    '-preset',
-                    'p1',  # P1 is the fastest performance preset
-                    '-tune',
-                    'll',  # Low Latency tuning
-                    '-rc',
-                    'constqp',  # Constant Quality mode
-                    '-qp',
-                    '23',  # Quality (18-28 is standard; lower = better quality)
-                    '-pix_fmt',
-                    'yuv420p')
+            # NVIDIA GPU
+            elif gpu[0] == 'NVIDIA':
+                return [
+                    '-c:v', 'h264_nvenc',
+                    '-preset', 'p1',
+                    '-tune', 'll',
+                    '-rc', 'constqp',
+                    '-qp', '23',
+                    "-pix_fmt", "yuv420p",
+                ]
 
-        # Intel GPU
-        elif gpu[0] == 'INTEL(R)':
-            return('-i',
-                    '-',
-                    '-c:v',
-                    'h264_qsv',  # Intel QuickSync Encoder
-                    '-preset',
-                    'veryfast',  # Fast encoding preset for QuickSync
-                    '-global_quality',
-                    '23',  # Target quality
-                    '-pix_fmt',
-                    'nv12'  # Optimal pixel format for QSV)
-                   )
-    # If the GPU name is malformed or unrecognized
-        return('-i',
-               '-',
-               '-c:v',
-               'libx264',  # Software CPU Encoder
-               '-preset',
-               'ultrafast',  # Dramatically reduces CPU work & encoding time
-               '-crf',
-               '23',  # Constant Rate Factor (Quality)
-               '-pix_fmt',
-               'yuv420p')
+            # Intel GPU
+            elif gpu[0] == 'INTEL(R)':
+                return [
+                    '-c:v', 'h264_qsv',
+                    '-preset', 'veryfast',
+                    '-global_quality', '23',
+                    "-pix_fmt", "yuv420p",
+                ]
+
+            # CPU Only / No GPU Fallback (libx264)
+            return [
+                '-c:v', 'libx264',
+                '-preset', 'ultrafast',
+                '-crf', '23',
+                "-pix_fmt", "yuv420p",
+            ]
 
     @staticmethod
     def write_to_file(pointer, value):
@@ -350,6 +421,7 @@ class MainProgram(customtkinter.CTk):
     def quit_app(self,icon):
         icon.stop()
         self.quit()
+        self.stop_ffmpeg()
 
     # Initialises the system tray logic
     def system_tray_setup(self):

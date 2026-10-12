@@ -1,5 +1,6 @@
-clip_key,
-clip_length,
-monitor,
-fps,
-gpu,
+clip_key,f8
+clip_length,20
+monitor,1
+fps,24
+mouse_shown,0
+gpu,AMD Radeon(TM) Graphics

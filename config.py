@@ -14,22 +14,25 @@ import subprocess
 from pathlib import Path
 import winreg
 import cv2
+import tempfile
+import os
+from screeninfo import get_monitors
 
+# Defaults
 root = tk.Tk()
 SCREEN_WIDTH = root.winfo_screenwidth()
 SCREEN_HEIGHT = root.winfo_screenheight()
 root.destroy()
 
+# Creates the 64x64 image for the tray icon
 def create_icon_image():
-    """Generates a simple 64x64 blue square icon image for the tray."""
     img = Image.new('RGB', (64, 64), color='#1f538d')
     # Optional: Draw a tiny white dot or design inside it
     d = ImageDraw.Draw(img)
     d.rectangle([(16, 16), (48, 48)], fill='white')
     return img
 
-TRAY_ICON = create_icon_image() # Stores the icon image for if it is minimized to tray
-
+# Returns a list of all available GPUs on the system
 def get_gpu_name():
     gpu_list = []
 
@@ -77,13 +80,29 @@ def get_gpu_name():
     gpu_list.append("CPU Only (No GPU)")
     return gpu_list
 
+# kills all the old ffmpeg instances (this is so the program doesn't hang on launch)
+def clear_old_ffmpeg_instances():
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/IM", "ffmpeg.exe"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+    except Exception:
+        pass
 
-GPU_LIST = get_gpu_name()
-print(GPU_LIST)
+        # 2. Gives a bit to release the file handles
+    time.sleep(0.2)
 
+# Running-------------------------------
 with open('defaults.csv','r') as csvfile:
     reader = csv.reader(csvfile)
 
     for line in reader:
         if line[0] == 'clip_key':
             CLIP_KEY = line[1]
+
+TRAY_ICON = create_icon_image()
+clear_old_ffmpeg_instances()
+GPU_LIST = get_gpu_name()
+
